@@ -1,54 +1,77 @@
-name: "release"
+name: Release
 
 on:
   push:
-    tags:
-      - "*"
+    branches: [main]
+  schedule:
+    - cron: "30 6 * * 1"
+  workflow_dispatch:
 
 permissions:
   contents: write
-  id-token: write
-  packages: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
-  publish:
+  release:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v6
         with:
-          node-version: "24"
-          registry-url: https://registry.npmjs.org
-      - name: enable corepack
-        run: corepack enable
-        shell: bash
-      - name: Cache dependencies
-        id: yarn-cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            **/node_modules
-            .yarn/install-state.gz
-          key: ${{ runner.os }}-yarn-${{ hashFiles('yarn.lock') }}-${{ hashFiles('**/package.json', '!node_modules/**') }}
-          restore-keys: |
-            ${{ runner.os }}-yarn-${{ hashFiles('yarn.lock') }}
-            ${{ runner.os }}-yarn-
-      - run: yarn install
-      - name: Update package.json version
+          fetch-depth: 0
+
+      - name: Build libsql for Android from the pinned fork
         run: |
-          TAG_NAME=${GITHUB_REF#refs/tags/}
-          jq --arg version "$TAG_NAME" '.version = $version' package.json > tmp.$$.json && mv tmp.$$.json package.json
-      - name: Publish to npm
+          cargo install cargo-ndk --locked
+          # Clone the pinned libsql source first; the build script reuses it.
+          mkdir -p build
+          spec="$(tr -d ' \n' < LIBSQL_SOURCE)"
+          repo="${spec%@*}"
+          ref="${spec#*@}"
+          git clone --depth 1 --branch "$ref" "https://github.com/$repo.git" build/libsql
+          # The cloned checkout pins its own toolchain; install the Android
+          # targets there, not on the runner's default toolchain.
+          TC="$(cd build/libsql && rustup show active-toolchain | awk '{print $1}')"
+          rustup toolchain install "$TC" --profile minimal
+          rustup target add aarch64-linux-android armv7-linux-androideabi \
+            x86_64-linux-android i686-linux-android --toolchain "$TC"
+          export ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME"
+          export RUSTFLAGS="-C link-arg=-Wl,-z,max-page-size=16384"
+          ./scripts/build-libsql.sh
+
+      - name: Compute the next patch tag
+        id: version
         run: |
-          if echo "$GITHUB_REF_NAME" | grep -q -- '-beta\|-alpha\|-rc'; then
-            npm publish --tag beta
-          else
-            npm publish
-          fi
-      - name: Create Github Release
-        uses: elgohr/Github-Release-Action@v5
+          VERSION="$(
+            gh api repos/OP-Engineering/op-sqlite/tags --paginate --jq '.[].name' \
+              | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1
+          )"
+          CZ_NUMBER="$(
+            git tag --list '*-cz.*' --format='%(refname:short)' \
+              | sed -E 's/.*-cz\.([0-9]+)$/\1/' | sort -n | tail -1
+          )"
+          CZ_NUMBER="${CZ_NUMBER:-0}"
+          echo "tag=$VERSION-cz.$((CZ_NUMBER + 1))" >> "$GITHUB_OUTPUT"
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          title: Release ${{ github.ref_name }}
-          tag: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Commit, tag, and release
+        run: |
+          git config user.name "casa-zurigo-ci"
+          git config user.email "ci@casazuri.ch"
+          git add android/src/main/jniLibs
+          if git diff --cached --quiet; then
+            echo "jniLibs unchanged; skipping release"
+            exit 0
+          fi
+          TAG="${{ steps.version.outputs.tag }}"
+          git commit -m "Rebuild libsql jniLibs for $TAG"
+          git tag "$TAG"
+          git push origin main "$TAG"
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --notes "op-sqlite with local-first libsql Android libraries built from CasaZurigo/libsql@main ($GITHUB_SHA)."
+        env:
+          GH_TOKEN: ${{ github.token }}
