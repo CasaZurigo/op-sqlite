@@ -3,12 +3,12 @@
   "version": "0.0.0",
   "description": "Fastest SQLite for React Native (with node.js support)",
   "main": "./lib/module/index.js",
-  "types": "./lib/typescript/src/index.d.ts",
+  "types": "./src/index.ts",
   "react-native": "src/index",
   "exports": {
     ".": {
       "source": "./src/index.ts",
-      "types": "./lib/typescript/src/index.d.ts",
+  "types": "./src/index.ts",
       "node": "./node/dist/index.js",
       "browser": "./lib/module/index.web.js",
       "react-native": "./lib/module/index.js",
@@ -45,8 +45,6 @@
     "test:node": "yarn workspace node test",
     "example": "yarn workspace op_sqlite_example",
     "typecheck": "tsc",
-    "prepare": "bob build && yarn build:node",
-    "build:node": "yarn workspace node build",
     "build:turso": "./scripts/build-turso-binaries.sh",
     "pods": "cd example && yarn pods",
     "clang-format-check": "clang-format -i cpp/*.cpp cpp/*.h"

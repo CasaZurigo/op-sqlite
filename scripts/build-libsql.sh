@@ -7,8 +7,22 @@ if [ -d "$ROOT_DIR/../libsql" ]; then
   LIBSQL_DIR="$ROOT_DIR/../libsql"
 elif [ -d "$ROOT_DIR/libsql" ]; then
   LIBSQL_DIR="$ROOT_DIR/libsql"
+elif [ -f "$ROOT_DIR/LIBSQL_SOURCE" ]; then
+  # CI flow: clone the pinned libsql fork, e.g. "CasaZurigo/libsql@main".
+  spec="$(tr -d ' \n' < "$ROOT_DIR/LIBSQL_SOURCE")"
+  repo="${spec%@*}"
+  ref="${spec#*@}"
+  LIBSQL_DIR="$ROOT_DIR/build/libsql"
+  mkdir -p "$LIBSQL_DIR"
+  if [ ! -d "$LIBSQL_DIR/.git" ]; then
+    git clone --depth 1 --branch "$ref" "https://github.com/$repo.git" "$LIBSQL_DIR"
+  else
+    git -C "$LIBSQL_DIR" fetch --depth 1 origin "$ref"
+    git -C "$LIBSQL_DIR" checkout --detach FETCH_HEAD
+  fi
+  echo "[op-sqlite] libsql source: $repo@$(git -C "$LIBSQL_DIR" rev-parse HEAD)"
 else
-  echo "[op-sqlite] libsql checkout not found. Expected at ../libsql or ./libsql"
+  echo "[op-sqlite] libsql checkout not found. Expected at ../libsql, ./libsql, or a LIBSQL_SOURCE file"
   exit 1
 fi
 
@@ -91,12 +105,9 @@ fi
 echo "[op-sqlite] Building Android libsql binaries"
 make -C "$BINDINGS_DIR" android
 
-echo "[op-sqlite] Building iOS libsql binaries"
-make -C "$BINDINGS_DIR" ios
-
-if [ ! -d "$IOS_SOURCE_DIR" ]; then
-  echo "[op-sqlite] Missing generated iOS artifacts at: $IOS_SOURCE_DIR"
-  exit 1
+if [ "${BUILD_IOS:-0}" = "1" ]; then
+  echo "[op-sqlite] Building iOS libsql binaries"
+  make -C "$BINDINGS_DIR" ios
 fi
 
 if [ ! -d "$ANDROID_SOURCE_DIR" ]; then
@@ -104,10 +115,17 @@ if [ ! -d "$ANDROID_SOURCE_DIR" ]; then
   exit 1
 fi
 
-echo "[op-sqlite] Installing iOS XCFramework"
-rm -rf "$IOS_TARGET_DIR"
-mkdir -p "$(dirname "$IOS_TARGET_DIR")"
-cp -R "$IOS_SOURCE_DIR" "$IOS_TARGET_DIR"
+if [ "${BUILD_IOS:-0}" = "1" ]; then
+  if [ ! -d "$IOS_SOURCE_DIR" ]; then
+    echo "[op-sqlite] Missing generated iOS artifacts at: $IOS_SOURCE_DIR"
+    exit 1
+  fi
+
+  echo "[op-sqlite] Installing iOS XCFramework"
+  rm -rf "$IOS_TARGET_DIR"
+  mkdir -p "$(dirname "$IOS_TARGET_DIR")"
+  cp -R "$IOS_SOURCE_DIR" "$IOS_TARGET_DIR"
+fi
 
 echo "[op-sqlite] Installing Android JNI libraries"
 mkdir -p "$ANDROID_TARGET_DIR"
@@ -122,5 +140,7 @@ for abi in "${ANDROID_ABIS[@]}"; do
 done
 
 echo "[op-sqlite] libsql binaries installed:"
-echo "  - iOS: $IOS_TARGET_DIR"
 echo "  - Android: $ANDROID_TARGET_DIR"
+if [ "${BUILD_IOS:-0}" = "1" ]; then
+  echo "  - iOS: $IOS_TARGET_DIR"
+fi
