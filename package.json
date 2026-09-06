@@ -3,12 +3,12 @@
   "version": "0.0.0",
   "description": "Fastest SQLite for React Native (with node.js support)",
   "main": "./lib/module/index.js",
-  "types": "./lib/typescript/src/index.d.ts",
+  "types": "./src/index.ts",
   "react-native": "src/index",
   "exports": {
     ".": {
       "source": "./src/index.ts",
-      "types": "./lib/typescript/src/index.d.ts",
+  "types": "./src/index.ts",
       "node": "./node/dist/index.js",
       "browser": "./lib/module/index.web.js",
       "react-native": "./lib/module/index.js",
