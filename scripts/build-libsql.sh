@@ -7,8 +7,22 @@ if [ -d "$ROOT_DIR/../libsql" ]; then
   LIBSQL_DIR="$ROOT_DIR/../libsql"
 elif [ -d "$ROOT_DIR/libsql" ]; then
   LIBSQL_DIR="$ROOT_DIR/libsql"
+elif [ -f "$ROOT_DIR/LIBSQL_SOURCE" ]; then
+  # CI flow: clone the pinned libsql fork, e.g. "CasaZurigo/libsql@main".
+  spec="$(tr -d ' \n' < "$ROOT_DIR/LIBSQL_SOURCE")"
+  repo="${spec%@*}"
+  ref="${spec#*@}"
+  LIBSQL_DIR="$ROOT_DIR/build/libsql"
+  mkdir -p "$LIBSQL_DIR"
+  if [ ! -d "$LIBSQL_DIR/.git" ]; then
+    git clone --depth 1 --branch "$ref" "https://github.com/$repo.git" "$LIBSQL_DIR"
+  else
+    git -C "$LIBSQL_DIR" fetch --depth 1 origin "$ref"
+    git -C "$LIBSQL_DIR" checkout --detach FETCH_HEAD
+  fi
+  echo "[op-sqlite] libsql source: $repo@$(git -C "$LIBSQL_DIR" rev-parse HEAD)"
 else
-  echo "[op-sqlite] libsql checkout not found. Expected at ../libsql or ./libsql"
+  echo "[op-sqlite] libsql checkout not found. Expected at ../libsql, ./libsql, or a LIBSQL_SOURCE file"
   exit 1
 fi
 
