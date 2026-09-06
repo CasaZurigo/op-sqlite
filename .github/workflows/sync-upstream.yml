@@ -30,21 +30,6 @@ jobs:
           git remote add upstream "$UPSTREAM_URL"
           git fetch upstream main --tags --force
           git merge upstream/main --no-edit
-
-          # Mirror the upstream package version; release tags are built on it.
-          UPSTREAM_VERSION="$(
-            curl -fsSL https://raw.githubusercontent.com/OP-Engineering/op-sqlite/main/package.json \
-              | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>console.log(JSON.parse(d).version))"
-          )"
-          node -e "
-            const fs = require('fs');
-            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-            pkg.version = '$UPSTREAM_VERSION';
-            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
-          "
-          git add package.json
-          git diff --cached --quiet || git commit -m "Mirror upstream version $UPSTREAM_VERSION"
-
           git push origin main
         env:
           UPSTREAM_URL: ${{ vars.UPSTREAM_URL }}
