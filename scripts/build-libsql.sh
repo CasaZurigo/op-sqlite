@@ -105,12 +105,9 @@ fi
 echo "[op-sqlite] Building Android libsql binaries"
 make -C "$BINDINGS_DIR" android
 
-echo "[op-sqlite] Building iOS libsql binaries"
-make -C "$BINDINGS_DIR" ios
-
-if [ ! -d "$IOS_SOURCE_DIR" ]; then
-  echo "[op-sqlite] Missing generated iOS artifacts at: $IOS_SOURCE_DIR"
-  exit 1
+if [ "${BUILD_IOS:-0}" = "1" ]; then
+  echo "[op-sqlite] Building iOS libsql binaries"
+  make -C "$BINDINGS_DIR" ios
 fi
 
 if [ ! -d "$ANDROID_SOURCE_DIR" ]; then
@@ -118,10 +115,17 @@ if [ ! -d "$ANDROID_SOURCE_DIR" ]; then
   exit 1
 fi
 
-echo "[op-sqlite] Installing iOS XCFramework"
-rm -rf "$IOS_TARGET_DIR"
-mkdir -p "$(dirname "$IOS_TARGET_DIR")"
-cp -R "$IOS_SOURCE_DIR" "$IOS_TARGET_DIR"
+if [ "${BUILD_IOS:-0}" = "1" ]; then
+  if [ ! -d "$IOS_SOURCE_DIR" ]; then
+    echo "[op-sqlite] Missing generated iOS artifacts at: $IOS_SOURCE_DIR"
+    exit 1
+  fi
+
+  echo "[op-sqlite] Installing iOS XCFramework"
+  rm -rf "$IOS_TARGET_DIR"
+  mkdir -p "$(dirname "$IOS_TARGET_DIR")"
+  cp -R "$IOS_SOURCE_DIR" "$IOS_TARGET_DIR"
+fi
 
 echo "[op-sqlite] Installing Android JNI libraries"
 mkdir -p "$ANDROID_TARGET_DIR"
@@ -136,5 +140,7 @@ for abi in "${ANDROID_ABIS[@]}"; do
 done
 
 echo "[op-sqlite] libsql binaries installed:"
-echo "  - iOS: $IOS_TARGET_DIR"
 echo "  - Android: $ANDROID_TARGET_DIR"
+if [ "${BUILD_IOS:-0}" = "1" ]; then
+  echo "  - iOS: $IOS_TARGET_DIR"
+fi
