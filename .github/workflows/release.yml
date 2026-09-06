@@ -25,14 +25,20 @@ jobs:
       - name: Build libsql for Android from the pinned fork
         run: |
           cargo install cargo-ndk --locked
-          export ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME"
-          export RUSTFLAGS="-C link-arg=-Wl,-z,max-page-size=16384"
-          # The cloned libsql checkout pins its own toolchain; install the
-          # Android targets there, not on the runner's default toolchain.
+          # Clone the pinned libsql source first; the build script reuses it.
+          mkdir -p build
+          spec="$(tr -d ' \n' < LIBSQL_SOURCE)"
+          repo="${spec%@*}"
+          ref="${spec#*@}"
+          git clone --depth 1 --branch "$ref" "https://github.com/$repo.git" build/libsql
+          # The cloned checkout pins its own toolchain; install the Android
+          # targets there, not on the runner's default toolchain.
           TC="$(cd build/libsql && rustup show active-toolchain | awk '{print $1}')"
           rustup toolchain install "$TC" --profile minimal
           rustup target add aarch64-linux-android armv7-linux-androideabi \
             x86_64-linux-android i686-linux-android --toolchain "$TC"
+          export ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME"
+          export RUSTFLAGS="-C link-arg=-Wl,-z,max-page-size=16384"
           ./scripts/build-libsql.sh
 
       - name: Compute the next patch tag
