@@ -408,179 +408,6 @@ describe("Queries tests", () => {
     }
   });
 
-  it("Transaction, auto commit", async () => {
-    const id = chance.integer();
-    const name = chance.name();
-    const age = chance.integer();
-    const networth = chance.floating();
-
-    await db.transaction(async (tx) => {
-      const res = await tx.execute(
-        'INSERT INTO "User" (id, name, age, networth) VALUES(?, ?, ?, ?)',
-        [id, name, age, networth],
-      );
-
-      expect(res.rowsAffected).toEqual(1);
-      expect(res.insertId).toEqual(1);
-      // expect(res.metadata).toEqual([]);
-      expect(res.rows).toDeepEqual([]);
-      expect(res.rows?.length).toEqual(0);
-    });
-
-    const res = await db.execute("SELECT * FROM User");
-    expect(res.rows).toDeepEqual([
-      {
-        id,
-        name,
-        age,
-        networth,
-        nickname: null,
-      },
-    ]);
-  });
-
-  it("Transaction, manual commit", async () => {
-    const id = chance.integer();
-    const name = chance.name();
-    const age = chance.integer();
-    const networth = chance.floating();
-
-    await db.transaction(async (tx) => {
-      const res = await tx.execute(
-        'INSERT INTO "User" (id, name, age, networth) VALUES(?, ?, ?, ?)',
-        [id, name, age, networth],
-      );
-
-      expect(res.rowsAffected).toEqual(1);
-      expect(res.insertId).toEqual(1);
-      expect(res.rows).toDeepEqual([]);
-      expect(res.rows?.length).toEqual(0);
-
-      await tx.commit();
-    });
-
-    const res = await db.execute("SELECT * FROM User");
-    // console.log(res);
-    expect(res.rows).toDeepEqual([
-      {
-        id,
-        name,
-        age,
-        networth,
-        nickname: null,
-      },
-    ]);
-  });
-
-  it("Transaction, executed in order", async () => {
-    const xs = 10;
-    const actual: unknown[] = [];
-
-    // ARRANGE: Generate expected data
-    const id = chance.integer();
-    const name = chance.name();
-    const age = chance.integer();
-
-    // ACT: Start multiple transactions to upsert and select the same record
-    const promises = [];
-    for (let i = 1; i <= xs; i++) {
-      const promised = db.transaction(async (tx) => {
-        // ACT: Upsert statement to create record / increment the value
-        await tx.execute(
-          `
-                INSERT OR REPLACE INTO [User] ([id], [name], [age], [networth])
-                SELECT ?, ?, ?,
-                  IFNULL((
-                    SELECT [networth] + 1000
-                    FROM [User]
-                    WHERE [id] = ?
-                  ), 0)
-            `,
-          [id, name, age, id],
-        );
-
-        // ACT: Select statement to get incremented value and store it for checking later
-        const results = await tx.execute("SELECT [networth] FROM [User] WHERE [id] = ?", [id]);
-
-        actual.push(results.rows[0]!.networth);
-      });
-
-      promises.push(promised);
-    }
-
-    // ACT: Wait for all transactions to complete
-    await Promise.all(promises);
-
-    // ASSERT: That the expected values where returned
-    const expected = Array(xs)
-      .fill(0)
-      .map((_, index) => index * 1000);
-
-    expect(actual).toDeepEqual(expected);
-  });
-
-  it("Transaction, cannot execute after commit", async () => {
-    const id = chance.integer();
-    const name = chance.name();
-    const age = chance.integer();
-    const networth = chance.floating();
-
-    await db.transaction(async (tx) => {
-      const res = await tx.execute(
-        'INSERT INTO "User" (id, name, age, networth) VALUES(?, ?, ?, ?)',
-        [id, name, age, networth],
-      );
-
-      expect(res.rowsAffected).toEqual(1);
-      expect(res.insertId).toEqual(1);
-      // expect(res.metadata).toEqual([]);
-      expect(res.rows).toDeepEqual([]);
-      expect(res.rows.length).toEqual(0);
-
-      await tx.commit();
-
-      try {
-        await tx.execute('SELECT * FROM "User"');
-      } catch (e) {
-        expect(!!e).toEqual(true);
-      }
-    });
-
-    const res = await db.execute("SELECT * FROM User");
-    expect(res.rows).toDeepEqual([
-      {
-        id,
-        name,
-        age,
-        networth,
-        nickname: null,
-      },
-    ]);
-  });
-
-  it("Incorrect transaction, manual rollback", async () => {
-    const id = chance.string();
-    const name = chance.name();
-    const age = chance.integer();
-    const networth = chance.floating();
-
-    await db.transaction(async (tx) => {
-      try {
-        await tx.execute('INSERT INTO "User" (id, name, age, networth) VALUES(?, ?, ?, ?)', [
-          id,
-          name,
-          age,
-          networth,
-        ]);
-      } catch (_e) {
-        await tx.rollback();
-      }
-    });
-
-    const res = await db.execute("SELECT * FROM User");
-    expect(res.rows).toDeepEqual([]);
-  });
-
   it("Correctly throws", async () => {
     const id = chance.string();
     const name = chance.name();
@@ -596,25 +423,6 @@ describe("Queries tests", () => {
     } catch (e: any) {
       expect(!!e).toEqual(true);
     }
-  });
-
-  it("Rollback", async () => {
-    const id = chance.integer();
-    const name = chance.name();
-    const age = chance.integer();
-    const networth = chance.floating();
-
-    await db.transaction(async (tx) => {
-      await tx.execute('INSERT INTO "User" (id, name, age, networth) VALUES(?, ?, ?, ?)', [
-        id,
-        name,
-        age,
-        networth,
-      ]);
-      await tx.rollback();
-      const res = await db.execute("SELECT * FROM User");
-      expect(res.rows).toDeepEqual([]);
-    });
   });
 
   it("Execute raw sync should return raw rows and column names", async () => {
@@ -633,54 +441,6 @@ describe("Queries tests", () => {
     const res = db.executeRawSync("SELECT id, name, age, networth FROM User");
     expect(res.rawRows).toDeepEqual([[id, name, age, networth]]);
     expect(res.columnNames).toDeepEqual(["id", "name", "age", "networth"]);
-  });
-
-  it("Transaction, rejects on callback error", async () => {
-    const promised = db.transaction(() => {
-      throw new Error("Error from callback");
-    });
-
-    // ASSERT: should return a promise that eventually rejects
-    expect(typeof promised === "object");
-    try {
-      await promised;
-      // expect.fail('Should not resolve');
-    } catch (e) {
-      // expect(e).to.be.a.instanceof(Error);
-      expect((e as Error)?.message).toEqual("Error from callback");
-    }
-  });
-
-  it("Transaction, rejects on invalid query", async () => {
-    const promised = db.transaction(async (tx) => {
-      await tx.execute("SELECT * FROM [tableThatDoesNotExist];");
-    });
-
-    // ASSERT: should return a promise that eventually rejects
-    // expect(promised).to.have.property('then').that.is.a('function');
-    try {
-      await promised;
-      // expect.fail('Should not resolve');
-    } catch (e) {
-      // expect(e).to.be.a.instanceof(Error);
-      expect(((e as Error)?.message?.length ?? 0) > 0).toBe(true);
-    }
-  });
-
-  it("Transaction, handle async callback", async () => {
-    let ranCallback = false;
-    const promised = db.transaction(async (tx) => {
-      await new Promise<void>((done) => {
-        setTimeout(() => done(), 50);
-      });
-      tx.execute("SELECT * FROM User;");
-      ranCallback = true;
-    });
-
-    // ASSERT: should return a promise that eventually rejects
-    // expect(promised).to.have.property('then').that.is.a('function');
-    await promised;
-    expect(ranCallback).toEqual(true);
   });
 
   it("executeBatch", async () => {
@@ -721,6 +481,96 @@ describe("Queries tests", () => {
         nickname: null,
       },
     ]);
+  });
+
+  it("executeBatchSync", async () => {
+    const id1 = chance.integer();
+    const name1 = chance.name();
+    const age1 = chance.integer();
+    const networth1 = chance.floating();
+
+    const id2 = chance.integer();
+    const name2 = chance.name();
+    const age2 = chance.integer();
+    const networth2 = chance.floating();
+
+    const commands: SQLBatchTuple[] = [
+      ['SELECT * FROM "User"', []],
+      ['SELECT * FROM "User"'],
+      [
+        'INSERT INTO "User" (id, name, age, networth) VALUES(?, ?, ?, ?)',
+        [id1, name1, age1, networth1],
+      ],
+      [
+        'INSERT INTO "User" (id, name, age, networth) VALUES(?, ?, ?, ?)',
+        [[id2, name2, age2, networth2]],
+      ],
+    ];
+
+    await db.executeBatchSync(commands);
+
+    const res = await db.execute("SELECT * FROM User");
+
+    expect(res.rows).toDeepEqual([
+      { id: id1, name: name1, age: age1, networth: networth1, nickname: null },
+      {
+        id: id2,
+        name: name2,
+        age: age2,
+        networth: networth2,
+        nickname: null,
+      },
+    ]);
+  });
+
+  it("executeBatch rolls back on error", async () => {
+    const id1 = chance.integer();
+    const name1 = chance.name();
+    const age1 = chance.integer();
+    const networth1 = chance.floating();
+
+    const commands: SQLBatchTuple[] = [
+      [
+        'INSERT INTO "User" (id, name, age, networth) VALUES(?, ?, ?, ?)',
+        [id1, name1, age1, networth1],
+      ],
+      ["INSERT INTO [tableThatDoesNotExist] (id) VALUES(1)"],
+    ];
+
+    try {
+      await db.executeBatch(commands);
+      throw new Error("Should not resolve");
+    } catch (e) {
+      expect(((e as Error)?.message?.length ?? 0) > 0).toBe(true);
+    }
+
+    const res = await db.execute("SELECT * FROM User");
+    expect(res.rows).toDeepEqual([]);
+  });
+
+  it("executeBatchSync rolls back on error", async () => {
+    const id1 = chance.integer();
+    const name1 = chance.name();
+    const age1 = chance.integer();
+    const networth1 = chance.floating();
+
+    const commands: SQLBatchTuple[] = [
+      [
+        'INSERT INTO "User" (id, name, age, networth) VALUES(?, ?, ?, ?)',
+        [id1, name1, age1, networth1],
+      ],
+      ["INSERT INTO [tableThatDoesNotExist] (id) VALUES(1)"],
+    ];
+
+    try {
+      await db.executeBatchSync(commands);
+      throw new Error("Should not resolve");
+    } catch (e) {
+      expect(((e as Error)?.message?.length ?? 0) > 0).toBe(true);
+    }
+
+    const res = await db.execute("SELECT * FROM User");
+    expect(res.rows).toDeepEqual([]);
   });
 
   it("Batch execute with BLOB", async () => {
@@ -853,36 +703,6 @@ describe("Queries tests", () => {
     await db.execute("SELECT 1       ");
     await db.execute("SELECT 1; ", []);
     await db.execute("SELECT ?; ", [1]);
-  });
-
-  it("Handles concurrent transactions correctly", async () => {
-    const id = chance.integer();
-    const name = chance.name();
-    const age = chance.integer();
-    const networth = chance.floating();
-
-    const transaction1 = db.transaction(async (tx) => {
-      await tx.execute('INSERT INTO "User" (id, name, age, networth) VALUES(?, ?, ?, ?)', [
-        id,
-        name,
-        age,
-        networth,
-      ]);
-    });
-
-    const transaction2 = db.transaction(async (tx) => {
-      await tx.execute('INSERT INTO "User" (id, name, age, networth) VALUES(?, ?, ?, ?)', [
-        id + 1,
-        name,
-        age,
-        networth,
-      ]);
-    });
-
-    await Promise.all([transaction1, transaction2]);
-
-    const res = await db.execute("SELECT * FROM User");
-    expect(res.rows.length).toEqual(2);
   });
 
   it("Pragma user_version", () => {

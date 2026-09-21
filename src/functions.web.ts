@@ -228,7 +228,7 @@ function enhanceWebDb(db: _InternalDB, options: { name?: string; location?: stri
           return res;
         };
 
-        const rollback = (): QueryResult => {
+        const rollback = async (): Promise<QueryResult> => {
           throwSyncApiError("rollback");
         };
 
@@ -247,16 +247,17 @@ function enhanceWebDb(db: _InternalDB, options: { name?: string; location?: stri
         try {
           await fn({
             execute,
-            commit,
-            rollback,
+            commit: commit as unknown as () => QueryResult,
+            rollback: rollback as unknown as () => QueryResult,
           });
 
           if (!finalized) {
             await commit();
           }
+
         } catch (error) {
           if (!finalized) {
-            await enhancedDb.execute("ROLLBACK;");
+            await rollback();
           }
 
           throw error;
@@ -298,6 +299,10 @@ function enhanceWebDb(db: _InternalDB, options: { name?: string; location?: stri
       return {
         rowsAffected: 0,
       };
+    },
+    // Web has no synchronous native APIs, so there is no distinct blocking behavior to offer.
+    executeBatchSync: async (commands: SQLBatchTuple[]): Promise<BatchQueryResult> => {
+      return enhancedDb.executeBatch(commands);
     },
     loadFile: async (_location: string): Promise<FileLoadResult> => {
       throw new Error("[op-sqlite] loadFile() is not supported on web.");
