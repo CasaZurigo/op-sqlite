@@ -1,10 +1,12 @@
 import "./blob";
 import "./constants";
 import "./dbsetup";
+import "./errorCodes";
 import "./hooks";
 import "./preparedStatements";
 import "./queries";
 import "./reactive";
+import "./rollback";
 import "./storage";
 import "./tokenizer";
 import "./transactions";

@@ -327,31 +327,22 @@ BatchResult import_sql_file(sqlite3 *db, std::string path) {
     throw std::runtime_error("Could not open file: " + path);
   }
 
-  try {
-    int affectedRows = 0;
-    int commands = 0;
-    opsqlite_execute(db, "BEGIN EXCLUSIVE TRANSACTION", nullptr);
-    while (std::getline(sqFile, line, '\n')) {
-      if (!line.empty()) {
-        try {
-          auto result = opsqlite_execute(db, line, nullptr);
-          affectedRows += result.affectedRows;
-          commands++;
-        } catch (std::exception &exc) {
-          opsqlite_execute(db, "ROLLBACK", nullptr);
-          sqFile.close();
-          throw exc;
+  // sqFile is closed by its destructor, on success and on failure alike
+  return run_in_transaction(
+      [db](const char *sql) { opsqlite_execute(db, sql, nullptr); },
+      [db]() -> std::optional<bool> { return opsqlite_in_transaction(db); },
+      "BEGIN EXCLUSIVE TRANSACTION", [&]() {
+        int affectedRows = 0;
+        int commands = 0;
+        while (std::getline(sqFile, line, '\n')) {
+          if (!line.empty()) {
+            auto result = opsqlite_execute(db, line, nullptr);
+            affectedRows += result.affectedRows;
+            commands++;
+          }
         }
-      }
-    }
-    sqFile.close();
-    opsqlite_execute(db, "COMMIT", nullptr);
-    return {"", affectedRows, commands};
-  } catch (std::exception &exc) {
-    sqFile.close();
-    opsqlite_execute(db, "ROLLBACK", nullptr);
-    throw exc;
-  }
+        return BatchResult{"", affectedRows, commands};
+      });
 }
 #endif
 
@@ -365,10 +356,51 @@ bool file_exists(const std::string &path) {
   return (stat(path.c_str(), &buffer) == 0);
 }
 
+jsi::Value create_js_error(jsi::Runtime &rt, const std::string &message,
+                           int code, int extended_code) {
+  auto error_ctr = rt.global().getPropertyAsFunction(rt, "Error");
+  auto error =
+      error_ctr.callAsConstructor(rt, jsi::String::createFromUtf8(rt, message))
+          .asObject(rt);
+
+  if (code >= 0) {
+    error.setProperty(rt, "code", jsi::Value(code));
+    error.setProperty(rt, "extendedCode", jsi::Value(extended_code));
+  }
+
+  return error;
+}
+
+void throw_js_error(jsi::Runtime &rt, const SQLiteError &error) {
+  throw jsi::JSError(
+      rt, create_js_error(rt, error.what(), error.code, error.extended_code));
+}
+
 void log_to_console(jsi::Runtime &runtime, const std::string &message) {
   auto console = runtime.global().getPropertyAsObject(runtime, "console");
   auto log = console.getPropertyAsFunction(runtime, "log");
   log.call(runtime, jsi::String::createFromUtf8(runtime, message));
+}
+
+/// Rejects a promisified call from the thread pool.
+///
+/// `resolve` is captured in the invokeAsync lambda alongside `reject` so it is
+/// disposed on the JS thread. A negative `code` means the failure did not come
+/// from SQLite and carries no result codes.
+static void reject_with(const std::shared_ptr<react::CallInvoker> &invoker,
+                        const std::shared_ptr<std::atomic<bool>> &alive,
+                        const std::shared_ptr<jsi::Value> &resolve,
+                        const std::shared_ptr<jsi::Value> &reject,
+                        std::string message, int code, int extended_code) {
+  if (alive != nullptr && !alive->load()) {
+    return;
+  }
+
+  invoker->invokeAsync([message = std::move(message), code, extended_code,
+                        resolve, reject](jsi::Runtime &rt) {
+    reject->asObject(rt).asFunction(rt).call(
+        rt, create_js_error(rt, message, code, extended_code));
+  });
 }
 
 jsi::Value
@@ -417,39 +449,19 @@ promisify(jsi::Runtime &rt, std::shared_ptr<ThreadPool> thread_pool,
               auto jsi_result = resolve_callback(rt, std::move(result));
               resolve->asObject(rt).asFunction(rt).call(rt, jsi_result);
             });
+      } catch (SQLiteError &e) {
+        // Caught ahead of runtime_error, its base class, so the SQLite result
+        // codes make it onto the rejected Error.
+        reject_with(invoker, alive, resolve, reject, e.what(), e.code,
+                    e.extended_code);
       } catch (std::runtime_error &e) {
         // On Android RN is broken and does not correctly match
         // runtime_error to the generic exception We have to
         // explicitly catch it
         // https://github.com/facebook/react-native/issues/48027
-        //
-        // resolve is also captured in the invokeAsync lambda
-        // so it can be safely disposed on the JS thread
-        auto what = e.what();
-        if (alive != nullptr && !alive->load()) {
-          return;
-        }
-        invoker->invokeAsync([what = std::string(what), resolve = resolve,
-                              reject = reject](jsi::Runtime &rt) {
-          auto errorCtr = rt.global().getPropertyAsFunction(rt, "Error");
-          auto error = errorCtr.callAsConstructor(
-              rt, jsi::String::createFromAscii(rt, what));
-          reject->asObject(rt).asFunction(rt).call(rt, error);
-        });
+        reject_with(invoker, alive, resolve, reject, e.what(), -1, -1);
       } catch (std::exception &exc) {
-        auto what = exc.what();
-        if (alive != nullptr && !alive->load()) {
-          return;
-        }
-        // resolve is also captured in the invokeAsync lambda
-        // so it can be safely disposed on the JS thread
-        invoker->invokeAsync([what = std::string(what), resolve = resolve,
-                              reject = reject](jsi::Runtime &rt) {
-          auto errorCtr = rt.global().getPropertyAsFunction(rt, "Error");
-          auto error = errorCtr.callAsConstructor(
-              rt, jsi::String::createFromAscii(rt, what));
-          reject->asObject(rt).asFunction(rt).call(rt, error);
-        });
+        reject_with(invoker, alive, resolve, reject, exc.what(), -1, -1);
       }
     };
 
