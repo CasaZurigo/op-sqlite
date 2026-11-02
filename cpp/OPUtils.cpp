@@ -5,8 +5,8 @@
 #ifndef OP_SQLITE_USE_LIBSQL
 #include "OPBridge.hpp"
 #endif
-#include "OPThreadPool.hpp"
 #include "OPMacros.hpp"
+#include "OPWorkerThread.hpp"
 #include <fstream>
 #include <sys/stat.h>
 #include <utility>
@@ -331,7 +331,8 @@ BatchResult import_sql_file(sqlite3 *db, std::string path) {
   return run_in_transaction(
       [db](const char *sql) { opsqlite_execute(db, sql, nullptr); },
       [db]() -> std::optional<bool> { return opsqlite_in_transaction(db); },
-      "BEGIN EXCLUSIVE TRANSACTION", [&]() {
+      "BEGIN EXCLUSIVE TRANSACTION",
+      [&]() {
         int affectedRows = 0;
         int commands = 0;
         while (std::getline(sqFile, line, '\n')) {
@@ -382,7 +383,7 @@ void log_to_console(jsi::Runtime &runtime, const std::string &message) {
   log.call(runtime, jsi::String::createFromUtf8(runtime, message));
 }
 
-/// Rejects a promisified call from the thread pool.
+/// Rejects a promisified call from the worker thread.
 ///
 /// `resolve` is captured in the invokeAsync lambda alongside `reject` so it is
 /// disposed on the JS thread. A negative `code` means the failure did not come
@@ -403,24 +404,29 @@ static void reject_with(const std::shared_ptr<react::CallInvoker> &invoker,
   });
 }
 
+std::string database_closed_message(const char *function_name) {
+  return std::string("[op-sqlite][") + function_name + "] database is closed";
+}
+
 jsi::Value
-promisify(jsi::Runtime &rt, std::shared_ptr<ThreadPool> thread_pool,
+promisify(jsi::Runtime &rt, const char *function_name,
+          std::shared_ptr<WorkerThread> worker_thread,
           std::function<std::any()> lambda,
           std::function<jsi::Value(jsi::Runtime &rt, std::any result)>
               resolve_callback) {
   auto promise_constructor = rt.global().getPropertyAsFunction(rt, "Promise");
 
-  auto executor =
-      HFN3(lambda = std::move(lambda),
-           resolve_callback = std::move(resolve_callback), thread_pool) {
+  auto executor = HFN4(lambda = std::move(lambda),
+                       resolve_callback = std::move(resolve_callback),
+                       worker_thread, function_name) {
     auto resolve = std::make_shared<jsi::Value>(rt, args[0]);
     auto reject = std::make_shared<jsi::Value>(rt, args[1]);
 
     // Bind this generation's invoker and liveness flag here, on the JS thread,
     // while the promise is being constructed. Reading the process globals from
-    // the worker instead lets a task queued by a torn-down runtime post into the
-    // runtime that replaced it, and then call asFunction() on a jsi::Value that
-    // belongs to the dead one.
+    // the worker instead lets a task queued by a torn-down runtime post into
+    // the runtime that replaced it, and then call asFunction() on a jsi::Value
+    // that belongs to the dead one.
     auto invoker = opsqlite::invoker;
     auto alive = opsqlite::generation_alive;
 
@@ -465,7 +471,13 @@ promisify(jsi::Runtime &rt, std::shared_ptr<ThreadPool> thread_pool,
       }
     };
 
-    thread_pool->queue_work(task);
+    try {
+      worker_thread->queue_work(task);
+    } catch (const WorkerThreadStoppedError &) {
+      // Thrown from the executor, so the promise rejects with the same error
+      // as every other call on a closed database.
+      throw std::runtime_error(database_closed_message(function_name));
+    }
 
     return jsi::Value(nullptr);
   });
